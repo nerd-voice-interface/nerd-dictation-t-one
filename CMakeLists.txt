@@ -103,9 +103,22 @@ add_subdirectory(${SHERPA_ONNX_DIR} ${CMAKE_CURRENT_BINARY_DIR}/sherpa-onnx)
 
 message(STATUS "T-one backend: using sherpa-onnx from ThirdParty/sherpa-onnx")
 
-# Main project headers
-get_filename_component(MAIN_PROJECT_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
-set(MAIN_PROJECT_INCLUDE "${MAIN_PROJECT_ROOT}/include")
+# ============================================================================
+# Include nerd-dictation-api (C API header)
+# ============================================================================
+
+set(NERD_DICTATION_API_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/nerd-dictation-api")
+
+if(NOT EXISTS "${NERD_DICTATION_API_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "\n"
+        "nerd-dictation-api submodule not found!\n"
+        "\n"
+        "Please initialize the git submodule:\n"
+        "  git submodule update --init --recursive\n"
+    )
+endif()
+
+add_subdirectory(${NERD_DICTATION_API_DIR} ${CMAKE_CURRENT_BINARY_DIR}/nerd-dictation-api)
 
 # ============================================================================
 # Source files
@@ -126,12 +139,12 @@ add_library(nerd-dictation-t-one SHARED
 target_include_directories(nerd-dictation-t-one
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MAIN_PROJECT_INCLUDE}
     ${SHERPA_ONNX_DIR}/sherpa-onnx/c-api
 )
 
 target_link_libraries(nerd-dictation-t-one
     PUBLIC
+    nerd-dictation-api
     sherpa-onnx-c-api
     res_embed
 )
@@ -177,10 +190,6 @@ set_target_properties(nerd-dictation-t-one PROPERTIES
 # ============================================================================
 
 add_executable(test_transcribe tests/test_transcribe.cpp)
-target_include_directories(test_transcribe PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MAIN_PROJECT_INCLUDE}
-)
 target_link_libraries(test_transcribe PRIVATE
     nerd-dictation-t-one
     nerd-dictation-t-one_t_one_model_onnx

@@ -4,3 +4,6 @@
 [submodule "ThirdParty/res_embed"]
 	path = ThirdParty/res_embed
 	url = https://github.com/dmikushin/res_embed.git
+[submodule "ThirdParty/nerd-dictation-api"]
+	path = ThirdParty/nerd-dictation-api
+	url = https://github.com/nerd-voice-interface/nerd-dictation-api.git
