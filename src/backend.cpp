@@ -8,6 +8,7 @@
 #include "nerd_dictation/backend_api.h"
 #include <res_embed.h>
 #include <sherpa-onnx/c-api/c-api.h>
+#include "models/sherpa-onnx-streaming-t-one-russian-2025-09-08/tokens.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -24,8 +25,6 @@ struct nerd_dictation_backend {
     /* Embedded resources (pointers to static data, no copy) */
     const char* model_data;
     size_t model_size;
-    const char* tokens_data;
-    size_t tokens_size;
 
     /* Result buffer (owned, reused between calls) */
     std::string result_text;
@@ -51,14 +50,11 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
     backend->sample_rate = 8000;  /* T-one uses 8kHz */
     backend->model_data = nullptr;
     backend->model_size = 0;
-    backend->tokens_data = nullptr;
-    backend->tokens_size = 0;
 
     std::cerr << "[T-one] Loading embedded model from memory..." << std::endl;
 
-    /* Get embedded resources */
+    /* Get embedded model */
     backend->model_data = res::embed::get("t_one_model_onnx", &backend->model_size);
-    backend->tokens_data = res::embed::get("t_one_tokens_txt", &backend->tokens_size);
 
     if (!backend->model_data || backend->model_size == 0) {
         backend->error_message = "T-one: embedded model not found";
@@ -67,15 +63,8 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
         return nullptr;
     }
 
-    if (!backend->tokens_data || backend->tokens_size == 0) {
-        backend->error_message = "T-one: embedded tokens not found";
-        std::cerr << "[T-one] ERROR: " << backend->error_message << std::endl;
-        delete backend;
-        return nullptr;
-    }
-
     std::cerr << "[T-one] Model size: " << backend->model_size
-              << " bytes, tokens size: " << backend->tokens_size << " bytes" << std::endl;
+              << " bytes, tokens size: " << t_one::TOKENS_SIZE << " bytes" << std::endl;
 
     /* Configure sherpa-onnx */
     SherpaOnnxOnlineRecognizerConfig config;
@@ -89,9 +78,9 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
     config.model_config.t_one_ctc.model_buf = backend->model_data;
     config.model_config.t_one_ctc.model_buf_size = static_cast<int32_t>(backend->model_size);
 
-    /* Tokens - load from memory buffer */
-    config.model_config.tokens_buf = backend->tokens_data;
-    config.model_config.tokens_buf_size = static_cast<int32_t>(backend->tokens_size);
+    /* Tokens - load from embedded header */
+    config.model_config.tokens_buf = t_one::TOKENS_DATA;
+    config.model_config.tokens_buf_size = t_one::TOKENS_SIZE;
 
     /* General model config */
     config.model_config.num_threads = 2;

@@ -16,7 +16,7 @@ set(T_ONE_MODEL_ARCHIVE_PARTS
     "${T_ONE_MODEL_DIR}/model.onnx.tar.bz2.ab"
     "${T_ONE_MODEL_DIR}/model.onnx.tar.bz2.ac"
 )
-set(T_ONE_TOKENS "${T_ONE_MODEL_DIR}/tokens.txt")
+# Tokens are now embedded in models/.../tokens.h header
 
 # ============================================================================
 # Extract model from split archive (if needed)
@@ -139,6 +139,7 @@ add_library(nerd-dictation-t-one SHARED
 target_include_directories(nerd-dictation-t-one
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${SHERPA_ONNX_DIR}/sherpa-onnx/c-api
 )
 
@@ -153,7 +154,7 @@ target_link_libraries(nerd-dictation-t-one
 # This ensures the model data is included even if not directly referenced
 if(UNIX AND NOT APPLE)
     set_target_properties(nerd-dictation-t-one PROPERTIES
-        LINK_FLAGS "-Wl,--whole-archive ${CMAKE_CURRENT_BINARY_DIR}/libnerd-dictation-t-one_t_one_model_onnx.a ${CMAKE_CURRENT_BINARY_DIR}/libnerd-dictation-t-one_t_one_tokens_txt.a -Wl,--no-whole-archive"
+        LINK_FLAGS "-Wl,--whole-archive ${CMAKE_CURRENT_BINARY_DIR}/libnerd-dictation-t-one_t_one_model_onnx.a -Wl,--no-whole-archive"
     )
 endif()
 
@@ -162,9 +163,8 @@ endif()
 # ============================================================================
 
 res_embed(TARGET nerd-dictation-t-one NAME "t_one_model_onnx" PATH ${T_ONE_MODEL_ONNX} KEYWORD)
-res_embed(TARGET nerd-dictation-t-one NAME "t_one_tokens_txt" PATH ${T_ONE_TOKENS} KEYWORD)
 
-message(STATUS "T-one backend: embedding model.onnx and tokens.txt into library")
+message(STATUS "T-one backend: embedding model.onnx into library (tokens from header)")
 
 # ============================================================================
 # Installation
@@ -193,5 +193,4 @@ add_executable(test_transcribe tests/test_transcribe.cpp)
 target_link_libraries(test_transcribe PRIVATE
     nerd-dictation-t-one
     nerd-dictation-t-one_t_one_model_onnx
-    nerd-dictation-t-one_t_one_tokens_txt
 )
