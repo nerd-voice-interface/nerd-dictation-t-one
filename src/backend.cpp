@@ -84,7 +84,7 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
 
     /* General model config */
     config.model_config.num_threads = 2;
-    config.model_config.provider = "cpu";
+    config.model_config.provider = "cuda";
     config.model_config.debug = 0;
 
     /* Decoding config */
