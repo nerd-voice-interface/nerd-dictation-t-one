@@ -1,12 +1,12 @@
 # Maintainer: Your Name <your@email.com>
 pkgname=nerd-dictation-t-one
 pkgver=1.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc="T-one ASR backend for nerd-dictation (Russian speech recognition)"
 arch=('x86_64')
 url="https://github.com/nerd-voice-interface/nerd-dictation"
 license=('MIT')
-depends=('onnxruntime' 'gcc-libs' 'glibc')
+depends=('onnxruntime-gpu-sm61' 'gcc-libs' 'glibc')
 makedepends=('git' 'cmake')
 provides=('nerd-dictation-backend')
 source=()
@@ -19,7 +19,7 @@ prepare() {
     cd "$_srcdir"
 
     # Initialize submodules if needed
-    if [ ! -f "ThirdParty/sherpa-onnx/CMakeLists.txt" ]; then
+    if [ ! -f "ThirdParty/res_embed/CMakeLists.txt" ]; then
         git submodule update --init --recursive
     fi
 }
