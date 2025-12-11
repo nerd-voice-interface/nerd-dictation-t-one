@@ -1,13 +1,14 @@
 /**
  * T-one ASR Backend - C API Implementation
  *
- * Uses sherpa-onnx with T-one CTC model for Russian language.
+ * Uses direct ONNX Runtime inference with T-one CTC model for Russian language.
  * The model is embedded into the library and loaded from memory.
  */
 
 #include "nerd_dictation/backend_api.h"
+#include "onnx_model.h"
+#include "ctc_decoder.h"
 #include <res_embed.h>
-#include <sherpa-onnx/c-api/c-api.h>
 #include "models/sherpa-onnx-streaming-t-one-russian-2025-09-08/tokens.h"
 #include <cstring>
 #include <string>
@@ -17,10 +18,18 @@
 
 /* Internal backend structure */
 struct nerd_dictation_backend {
-    const SherpaOnnxOnlineRecognizer* recognizer;
-    const SherpaOnnxOnlineStream* stream;
+    std::unique_ptr<t_one::OnnxModel> model;
+    std::unique_ptr<t_one::CtcDecoder> decoder;
+    t_one::CtcDecoderResult decoder_result;
 
     int sample_rate;
+    int frame_length_samples;
+
+    /* Token table for decoding */
+    std::vector<std::string> token_table;
+
+    /* Audio buffer for accumulating samples until we have enough for a frame */
+    std::vector<float> audio_buffer;
 
     /* Embedded resources (pointers to static data, no copy) */
     const char* model_data;
@@ -28,8 +37,10 @@ struct nerd_dictation_backend {
 
     /* Result buffer (owned, reused between calls) */
     std::string result_text;
-    std::string last_partial;
     std::string error_message;
+
+    /* Endpoint detection parameters (in frames, 30ms each) */
+    int trailing_silence_threshold;  // Number of blank frames for endpoint
 
     /* Thread safety for result buffer */
     std::mutex result_mutex;
@@ -45,11 +56,11 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
         return nullptr;
     }
 
-    backend->recognizer = nullptr;
-    backend->stream = nullptr;
     backend->sample_rate = 8000;  /* T-one uses 8kHz */
+    backend->frame_length_samples = 2400;  /* 300ms at 8kHz */
     backend->model_data = nullptr;
     backend->model_size = 0;
+    backend->trailing_silence_threshold = 40;  // 40 frames * 30ms = 1.2s
 
     std::cerr << "[T-one] Loading embedded model from memory..." << std::endl;
 
@@ -66,72 +77,34 @@ extern "C" nerd_dictation_t nerd_dictation_create(void) {
     std::cerr << "[T-one] Model size: " << backend->model_size
               << " bytes, tokens size: " << t_one::TOKENS_SIZE << " bytes" << std::endl;
 
-    /* Configure sherpa-onnx */
-    SherpaOnnxOnlineRecognizerConfig config;
-    memset(&config, 0, sizeof(config));
-
-    /* Feature config (T-one uses raw audio, not mel features) */
-    config.feat_config.sample_rate = backend->sample_rate;
-    config.feat_config.feature_dim = 0;
-
-    /* T-one CTC model - load from memory buffer */
-    config.model_config.t_one_ctc.model_buf = backend->model_data;
-    config.model_config.t_one_ctc.model_buf_size = static_cast<int32_t>(backend->model_size);
-
-    /* Tokens - load from embedded header */
-    config.model_config.tokens_buf = t_one::TOKENS_DATA;
-    config.model_config.tokens_buf_size = t_one::TOKENS_SIZE;
-
-    /* General model config */
-    config.model_config.num_threads = 2;
-    config.model_config.provider = "cuda";
-    config.model_config.debug = 0;
-
-    /* Decoding config */
-    config.decoding_method = "greedy_search";
-    config.max_active_paths = 4;
-
-    /* Endpoint detection config */
-    config.enable_endpoint = 1;
-    config.rule1_min_trailing_silence = 2.4f;
-    config.rule2_min_trailing_silence = 1.2f;
-    config.rule3_min_utterance_length = 20.0f;
-
-    /* Create recognizer */
-    backend->recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
-    if (!backend->recognizer) {
-        backend->error_message = "Failed to create T-one recognizer";
+    /* Create and load model */
+    backend->model = std::make_unique<t_one::OnnxModel>();
+    if (!backend->model->Load(backend->model_data, backend->model_size, true)) {
+        backend->error_message = "Failed to load T-one model: " + backend->model->GetError();
         std::cerr << "[T-one] ERROR: " << backend->error_message << std::endl;
         delete backend;
         return nullptr;
     }
 
-    /* Create stream */
-    backend->stream = SherpaOnnxCreateOnlineStream(backend->recognizer);
-    if (!backend->stream) {
-        SherpaOnnxDestroyOnlineRecognizer(backend->recognizer);
-        backend->error_message = "Failed to create T-one stream";
-        std::cerr << "[T-one] ERROR: " << backend->error_message << std::endl;
-        delete backend;
-        return nullptr;
-    }
+    /* Update parameters from model metadata */
+    backend->sample_rate = backend->model->SampleRate();
+    backend->frame_length_samples = backend->model->FrameLengthSamples();
+
+    /* Parse tokens */
+    backend->token_table = t_one::ParseTokens(t_one::TOKENS_DATA, t_one::TOKENS_SIZE);
+
+    /* Create decoder with blank_id = 34 */
+    backend->decoder = std::make_unique<t_one::CtcDecoder>(34);
 
     std::cerr << "[T-one] Model loaded successfully (sample rate: "
-              << backend->sample_rate << " Hz)" << std::endl;
+              << backend->sample_rate << " Hz, frame: "
+              << backend->frame_length_samples << " samples)" << std::endl;
 
     return backend;
 }
 
 extern "C" void nerd_dictation_destroy(nerd_dictation_t backend) {
     if (!backend) return;
-
-    if (backend->stream) {
-        SherpaOnnxDestroyOnlineStream(backend->stream);
-    }
-    if (backend->recognizer) {
-        SherpaOnnxDestroyOnlineRecognizer(backend->recognizer);
-    }
-
     delete backend;
 }
 
@@ -153,26 +126,40 @@ extern "C" int nerd_dictation_get_info(nerd_dictation_t backend, struct nerd_dic
  * ============================================================================ */
 
 extern "C" int nerd_dictation_feed(nerd_dictation_t backend, const int16_t* samples, size_t num_samples) {
-    if (!backend || !backend->recognizer || !backend->stream) return -1;
+    if (!backend || !backend->model || !backend->decoder) return -1;
     if (!samples || num_samples == 0) return 0;
 
-    /* Convert int16 to float [-1, 1] */
-    std::vector<float> float_samples(num_samples);
+    /* Convert int16 to float [-1, 1] and add to buffer */
     for (size_t i = 0; i < num_samples; ++i) {
-        float_samples[i] = samples[i] / 32768.0f;
+        backend->audio_buffer.push_back(samples[i] / 32768.0f);
     }
 
-    /* Feed audio to stream */
-    SherpaOnnxOnlineStreamAcceptWaveform(
-        backend->stream,
-        backend->sample_rate,
-        float_samples.data(),
-        static_cast<int32_t>(num_samples)
-    );
+    /* Process complete frames */
+    while (backend->audio_buffer.size() >= static_cast<size_t>(backend->frame_length_samples)) {
+        /* Run inference on frame */
+        std::vector<float> log_probs = backend->model->Forward(
+            backend->audio_buffer.data(),
+            backend->frame_length_samples
+        );
 
-    /* Decode ready frames */
-    while (SherpaOnnxIsOnlineStreamReady(backend->recognizer, backend->stream)) {
-        SherpaOnnxDecodeOnlineStream(backend->recognizer, backend->stream);
+        if (log_probs.empty()) {
+            return -2;  // Inference error
+        }
+
+        /* Decode */
+        int32_t num_frames = static_cast<int32_t>(log_probs.size()) / backend->model->VocabSize();
+        backend->decoder->Decode(
+            log_probs.data(),
+            num_frames,
+            backend->model->VocabSize(),
+            &backend->decoder_result
+        );
+
+        /* Remove processed samples from buffer */
+        backend->audio_buffer.erase(
+            backend->audio_buffer.begin(),
+            backend->audio_buffer.begin() + backend->frame_length_samples
+        );
     }
 
     return 0;
@@ -180,37 +167,29 @@ extern "C" int nerd_dictation_feed(nerd_dictation_t backend, const int16_t* samp
 
 extern "C" int nerd_dictation_result(nerd_dictation_t backend, struct nerd_dictation_result* result) {
     if (!backend || !result) return -1;
-    if (!backend->recognizer || !backend->stream) return -2;
+    if (!backend->model || !backend->decoder) return -2;
 
-    /* Check for endpoint */
-    int is_endpoint = SherpaOnnxOnlineStreamIsEndpoint(backend->recognizer, backend->stream);
-
-    /* Get result from sherpa-onnx */
-    const SherpaOnnxOnlineRecognizerResult* sherpa_result =
-        SherpaOnnxGetOnlineStreamResult(backend->recognizer, backend->stream);
+    /* Check for endpoint (trailing silence) */
+    int is_endpoint = backend->decoder_result.num_trailing_blanks >= backend->trailing_silence_threshold;
 
     {
         std::lock_guard<std::mutex> lock(backend->result_mutex);
 
-        if (sherpa_result && sherpa_result->text && strlen(sherpa_result->text) > 0) {
-            backend->result_text = sherpa_result->text;
-        } else {
-            backend->result_text.clear();
-        }
+        /* Convert tokens to text */
+        backend->result_text = t_one::TokensToText(
+            backend->decoder_result.tokens,
+            backend->token_table
+        );
 
         result->text = backend->result_text.c_str();
-        result->is_final = is_endpoint;
+        result->is_final = is_endpoint && !backend->result_text.empty();
         result->confidence = -1.0f;  /* Not available */
 
-        /* If endpoint, reset stream for next utterance */
-        if (is_endpoint && !backend->result_text.empty()) {
-            SherpaOnnxOnlineStreamReset(backend->recognizer, backend->stream);
-            backend->last_partial.clear();
+        /* If endpoint with text, reset for next utterance */
+        if (result->is_final) {
+            backend->decoder->Reset(&backend->decoder_result);
+            backend->model->Reset();
         }
-    }
-
-    if (sherpa_result) {
-        SherpaOnnxDestroyOnlineRecognizerResult(sherpa_result);
     }
 
     return 0;
@@ -218,37 +197,49 @@ extern "C" int nerd_dictation_result(nerd_dictation_t backend, struct nerd_dicta
 
 extern "C" int nerd_dictation_finalize(nerd_dictation_t backend, struct nerd_dictation_result* result) {
     if (!backend || !result) return -1;
-    if (!backend->recognizer || !backend->stream) return -2;
+    if (!backend->model || !backend->decoder) return -2;
 
-    /* Signal end of input */
-    SherpaOnnxOnlineStreamInputFinished(backend->stream);
+    /* Process any remaining audio in buffer */
+    if (!backend->audio_buffer.empty()) {
+        /* Pad with zeros if needed */
+        size_t pad_size = backend->frame_length_samples - backend->audio_buffer.size();
+        if (pad_size > 0) {
+            backend->audio_buffer.resize(backend->frame_length_samples, 0.0f);
+        }
 
-    /* Decode remaining frames */
-    while (SherpaOnnxIsOnlineStreamReady(backend->recognizer, backend->stream)) {
-        SherpaOnnxDecodeOnlineStream(backend->recognizer, backend->stream);
+        /* Run final inference */
+        std::vector<float> log_probs = backend->model->Forward(
+            backend->audio_buffer.data(),
+            backend->frame_length_samples
+        );
+
+        if (!log_probs.empty()) {
+            int32_t num_frames = static_cast<int32_t>(log_probs.size()) / backend->model->VocabSize();
+            backend->decoder->Decode(
+                log_probs.data(),
+                num_frames,
+                backend->model->VocabSize(),
+                &backend->decoder_result
+            );
+        }
+
+        backend->audio_buffer.clear();
     }
-
-    /* Get final result */
-    const SherpaOnnxOnlineRecognizerResult* sherpa_result =
-        SherpaOnnxGetOnlineStreamResult(backend->recognizer, backend->stream);
 
     {
         std::lock_guard<std::mutex> lock(backend->result_mutex);
 
-        if (sherpa_result && sherpa_result->text && strlen(sherpa_result->text) > 0) {
-            backend->result_text = sherpa_result->text;
-            std::cerr << "[T-one] Final result: '" << backend->result_text << "'" << std::endl;
-        } else {
-            backend->result_text.clear();
-        }
+        /* Convert tokens to text */
+        backend->result_text = t_one::TokensToText(
+            backend->decoder_result.tokens,
+            backend->token_table
+        );
+
+        std::cerr << "[T-one] Final result: '" << backend->result_text << "'" << std::endl;
 
         result->text = backend->result_text.c_str();
         result->is_final = 1;
         result->confidence = -1.0f;
-    }
-
-    if (sherpa_result) {
-        SherpaOnnxDestroyOnlineRecognizerResult(sherpa_result);
     }
 
     return 0;
@@ -256,14 +247,15 @@ extern "C" int nerd_dictation_finalize(nerd_dictation_t backend, struct nerd_dic
 
 extern "C" int nerd_dictation_reset(nerd_dictation_t backend) {
     if (!backend) return -1;
-    if (!backend->recognizer || !backend->stream) return -2;
+    if (!backend->model || !backend->decoder) return -2;
 
-    SherpaOnnxOnlineStreamReset(backend->recognizer, backend->stream);
+    backend->decoder->Reset(&backend->decoder_result);
+    backend->model->Reset();
+    backend->audio_buffer.clear();
 
     {
         std::lock_guard<std::mutex> lock(backend->result_mutex);
         backend->result_text.clear();
-        backend->last_partial.clear();
     }
 
     return 0;
@@ -280,7 +272,7 @@ extern "C" int nerd_dictation_transcribe_stream(
     void* user_data
 ) {
     if (!backend || !audio_cb) return -1;
-    if (!backend->recognizer || !backend->stream) return -2;
+    if (!backend->model || !backend->decoder) return -2;
 
     std::cerr << "[T-one] Starting streaming recognition" << std::endl;
 

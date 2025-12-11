@@ -26,8 +26,9 @@ struct StreamContext {
     size_t offset;
     size_t chunk_size;
 
-    /* Result state */
-    std::string final_text;
+    /* Result state - accumulate all final segments */
+    std::string all_final_text;  // All final segments concatenated
+    std::string last_final_text; // Last final segment only
     std::string last_partial;
 };
 
@@ -53,8 +54,13 @@ static void result_callback(const struct nerd_dictation_result* result, void* us
     auto* ctx = static_cast<StreamContext*>(user_data);
 
     if (result->is_final) {
-        ctx->final_text = result->text ? result->text : "";
-        std::cout << "[FINAL] " << ctx->final_text << std::endl;
+        ctx->last_final_text = result->text ? result->text : "";
+        // Accumulate all final segments with space separator
+        if (!ctx->all_final_text.empty() && !ctx->last_final_text.empty()) {
+            ctx->all_final_text += " ";
+        }
+        ctx->all_final_text += ctx->last_final_text;
+        std::cout << "[FINAL] " << ctx->last_final_text << std::endl;
     } else if (result->text) {
         ctx->last_partial = result->text;
         std::cout << "[partial] " << result->text << std::endl;
@@ -152,13 +158,14 @@ int main(int argc, char* argv[]) {
     }
 
     /* Check if we got a result from streaming API */
-    std::string streaming_result = stream_ctx.final_text;
+    std::string streaming_result = stream_ctx.all_final_text;
     std::cout << "Streaming API result: \"" << streaming_result << "\"" << std::endl;
 
     /* Reset and use manual loop for comparison */
     nerd_dictation_reset(backend);
     stream_ctx.offset = 0;
-    stream_ctx.final_text.clear();
+    stream_ctx.all_final_text.clear();
+    stream_ctx.last_final_text.clear();
     stream_ctx.last_partial.clear();
 
     std::cout << "\nTranscribing (manual loop)..." << std::endl;
@@ -192,7 +199,11 @@ int main(int argc, char* argv[]) {
             std::string current_text(result.text);
 
             if (result.is_final) {
-                stream_ctx.final_text = current_text;
+                // Accumulate final segments
+                if (!stream_ctx.all_final_text.empty()) {
+                    stream_ctx.all_final_text += " ";
+                }
+                stream_ctx.all_final_text += current_text;
                 std::cout << "[FINAL] " << current_text << std::endl;
             } else if (current_text != last_text) {
                 std::cout << "[partial] " << current_text << std::endl;
@@ -206,10 +217,12 @@ int main(int argc, char* argv[]) {
     ret = nerd_dictation_finalize(backend, &final_result);
     if (ret == 0 && final_result.text && strlen(final_result.text) > 0) {
         std::string finalized(final_result.text);
-        if (finalized != stream_ctx.final_text) {
-            stream_ctx.final_text = finalized;
-            std::cout << "[FINALIZED] " << finalized << std::endl;
+        // Accumulate final segment
+        if (!stream_ctx.all_final_text.empty()) {
+            stream_ctx.all_final_text += " ";
         }
+        stream_ctx.all_final_text += finalized;
+        std::cout << "[FINALIZED] " << finalized << std::endl;
     }
 
     /* Cleanup */

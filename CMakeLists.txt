@@ -71,38 +71,51 @@ set(BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 add_subdirectory(${RES_EMBED_DIR} ${CMAKE_CURRENT_BINARY_DIR}/res_embed)
 
 # ============================================================================
-# Include sherpa-onnx as submodule
+# Find ONNX Runtime (system package)
 # ============================================================================
 
-set(SHERPA_ONNX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/sherpa-onnx")
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(ONNXRUNTIME QUIET libonnxruntime)
+endif()
 
-if(NOT EXISTS "${SHERPA_ONNX_DIR}/CMakeLists.txt")
+if(NOT ONNXRUNTIME_FOUND)
+    # Manual search for ONNX Runtime
+    find_path(ONNXRUNTIME_INCLUDE_DIRS
+        NAMES onnxruntime_cxx_api.h
+        PATHS
+            /usr/include/onnxruntime/core/session
+            /usr/local/include/onnxruntime/core/session
+            /usr/include
+            /usr/local/include
+    )
+
+    find_library(ONNXRUNTIME_LIBRARY
+        NAMES onnxruntime
+        PATHS
+            /usr/lib
+            /usr/lib64
+            /usr/local/lib
+            /usr/local/lib64
+    )
+
+    if(ONNXRUNTIME_INCLUDE_DIRS AND ONNXRUNTIME_LIBRARY)
+        set(ONNXRUNTIME_FOUND TRUE)
+        set(ONNXRUNTIME_LIBRARIES ${ONNXRUNTIME_LIBRARY})
+    endif()
+endif()
+
+if(NOT ONNXRUNTIME_FOUND)
     message(FATAL_ERROR "\n"
-        "sherpa-onnx submodule not found!\n"
+        "ONNX Runtime not found!\n"
         "\n"
-        "Please initialize the git submodule:\n"
-        "  git submodule update --init --recursive\n"
+        "Please install onnxruntime:\n"
+        "  Arch Linux: pacman -S onnxruntime\n"
+        "  Ubuntu: apt install libonnxruntime-dev\n"
     )
 endif()
 
-# sherpa-onnx settings: C API only, minimal build
-set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_GPU ON CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_JNI OFF CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
-set(SHERPA_ONNX_ENABLE_TTS OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
-
-# Use system onnxruntime
-set(SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE ON CACHE BOOL "" FORCE)
-set(ENV{SHERPA_ONNXRUNTIME_INCLUDE_DIR} "/usr/include/onnxruntime/core/session")
-set(ENV{SHERPA_ONNXRUNTIME_LIB_DIR} "/usr/lib")
-
-add_subdirectory(${SHERPA_ONNX_DIR} ${CMAKE_CURRENT_BINARY_DIR}/sherpa-onnx)
-
-message(STATUS "T-one backend: using sherpa-onnx from ThirdParty/sherpa-onnx")
+message(STATUS "T-one backend: using ONNX Runtime from ${ONNXRUNTIME_INCLUDE_DIRS}")
 
 # ============================================================================
 # Include nerd-dictation-api (C API header)
@@ -127,6 +140,8 @@ add_subdirectory(${NERD_DICTATION_API_DIR} ${CMAKE_CURRENT_BINARY_DIR}/nerd-dict
 
 set(T_ONE_SOURCES
     src/backend.cpp
+    src/onnx_model.cpp
+    src/ctc_decoder.cpp
 )
 
 # ============================================================================
@@ -141,14 +156,17 @@ target_include_directories(nerd-dictation-t-one
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${SHERPA_ONNX_DIR}/sherpa-onnx/c-api
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE
+    ${ONNXRUNTIME_INCLUDE_DIRS}
 )
 
 target_link_libraries(nerd-dictation-t-one
     PUBLIC
     nerd-dictation-api
-    sherpa-onnx-c-api
     res_embed
+    PRIVATE
+    ${ONNXRUNTIME_LIBRARIES}
 )
 
 # Force whole-archive linking for embedded resources

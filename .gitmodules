@@ -1,6 +1,3 @@
-[submodule "ThirdParty/sherpa-onnx"]
-	path = ThirdParty/sherpa-onnx
-	url = https://github.com/dmikushin/sherpa-onnx.git
 [submodule "ThirdParty/res_embed"]
 	path = ThirdParty/res_embed
 	url = https://github.com/dmikushin/res_embed.git
