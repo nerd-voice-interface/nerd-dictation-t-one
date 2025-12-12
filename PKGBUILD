@@ -1,7 +1,7 @@
 # Maintainer: Your Name <your@email.com>
 pkgname=nerd-dictation-t-one
 pkgver=1.0.0
-pkgrel=2
+pkgrel=5
 pkgdesc="T-one ASR backend for nerd-dictation (Russian speech recognition)"
 arch=('x86_64')
 url="https://github.com/nerd-voice-interface/nerd-dictation"

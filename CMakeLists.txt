@@ -132,7 +132,7 @@ if(NOT EXISTS "${NERD_DICTATION_API_DIR}/CMakeLists.txt")
     )
 endif()
 
-add_subdirectory(${NERD_DICTATION_API_DIR} ${CMAKE_CURRENT_BINARY_DIR}/nerd-dictation-api)
+add_subdirectory(${NERD_DICTATION_API_DIR} ${CMAKE_CURRENT_BINARY_DIR}/nerd-dictation-api EXCLUDE_FROM_ALL)
 
 # ============================================================================
 # Source files
